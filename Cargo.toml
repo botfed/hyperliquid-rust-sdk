@@ -10,7 +10,7 @@ documentation = "https://github.com/hyperliquid-dex/hyperliquid-rust-sdk"
 repository = "https://github.com/hyperliquid-dex/hyperliquid-rust-sdk"
 
 [features]
-default = []
+default = ["fast-sign"]
 fast-sign = ["secp256k1"]
 
 [dependencies]
