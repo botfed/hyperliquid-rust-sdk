@@ -1,6 +1,6 @@
 use alloy::{
     primitives::B256,
-    signers::{local::PrivateKeySigner, Signature, SignerSync},
+    signers::{local::PrivateKeySigner, Signature},
 };
 
 use crate::{eip712::Eip712, prelude::*, signature::agent::l1, Error};
@@ -18,10 +18,42 @@ pub fn sign_l1_action(
     sign_typed_data(&payload, wallet)
 }
 
+/// Fast signing using libsecp256k1 (C/ASM, ~30µs)
+#[cfg(feature = "fast-sign")]
 pub(crate) fn sign_typed_data<T: Eip712>(
     payload: &T,
     wallet: &PrivateKeySigner,
 ) -> Result<Signature> {
+    use alloy::primitives::U256;
+
+    let hash = payload.eip712_signing_hash();
+    let key_bytes = wallet.credential().to_bytes();
+
+    let secp = secp256k1::Secp256k1::signing_only();
+    let secret_key = secp256k1::SecretKey::from_slice(&key_bytes)
+        .map_err(|e| Error::SignatureFailure(e.to_string()))?;
+    let msg = secp256k1::Message::from_digest(hash.0);
+    let recoverable_sig = secp.sign_ecdsa_recoverable(&msg, &secret_key);
+    let (rec_id, compact) = recoverable_sig.serialize_compact();
+
+    let r = U256::from_be_slice(&compact[..32]);
+    let s = U256::from_be_slice(&compact[32..]);
+    let v = match rec_id {
+        secp256k1::ecdsa::RecoveryId::Zero => false,
+        secp256k1::ecdsa::RecoveryId::One => true,
+        _ => return Err(Error::SignatureFailure("unexpected recovery id".into())),
+    };
+
+    Ok(Signature::new(r, s, v))
+}
+
+/// Default signing using alloy/k256 (pure Rust, ~120µs)
+#[cfg(not(feature = "fast-sign"))]
+pub(crate) fn sign_typed_data<T: Eip712>(
+    payload: &T,
+    wallet: &PrivateKeySigner,
+) -> Result<Signature> {
+    use alloy::signers::SignerSync;
     wallet
         .sign_hash_sync(&payload.eip712_signing_hash())
         .map_err(|e| Error::SignatureFailure(e.to_string()))
